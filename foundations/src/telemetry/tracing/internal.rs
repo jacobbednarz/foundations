@@ -1,4 +1,5 @@
 use super::init::TracingHarness;
+use super::live_reference_set::LiveReferenceHandle;
 use super::StartTraceOptions;
 use rand::{self, Rng};
 
@@ -11,11 +12,13 @@ use std::sync::Arc;
 
 pub(crate) type Tracer = cf_rustracing::Tracer<BoxSampler<SpanContextState>, SpanContextState>;
 
+pub(crate) type SharedSpanInner = LiveReferenceHandle<Arc<parking_lot::RwLock<Span>>>;
+
 #[derive(Debug, Clone)]
 pub(crate) struct SharedSpan {
     // NOTE: we intentionally use a lock without poisoning here to not
     // panic the threads if they just share telemetry with failed thread.
-    pub(crate) inner: Arc<parking_lot::RwLock<Span>>,
+    pub(crate) inner: Arc<SharedSpanInner>,
     // NOTE: store sampling flag separately, so we don't need to acquire lock
     // every time we need to check the flag.
     is_sampled: bool,
@@ -24,11 +27,18 @@ pub(crate) struct SharedSpan {
 impl From<Span> for SharedSpan {
     fn from(inner: Span) -> Self {
         let is_sampled = inner.is_sampled();
+        let span = Arc::new(parking_lot::RwLock::new(inner));
 
         Self {
-            inner: Arc::new(parking_lot::RwLock::new(inner)),
+            inner: TracingHarness::get().active_roots.track(span),
             is_sampled,
         }
+    }
+}
+
+impl SharedSpan {
+    pub(crate) fn into_span(self) -> Arc<parking_lot::RwLock<Span>> {
+        Arc::clone(&self.inner)
     }
 }
 

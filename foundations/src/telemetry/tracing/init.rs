@@ -1,11 +1,15 @@
 use super::internal::{SharedSpan, Tracer};
+use super::live_reference_set::LiveReferenceSet;
 use super::output_jaeger_thrift_udp;
 use crate::telemetry::scope::ScopeStack;
 use crate::telemetry::settings::{SamplingStrategy, TracesOutput, TracingSettings};
+use crate::telemetry::tracing::event_output::spans_to_trace_events;
 use crate::{BootstrapResult, ServiceInfo};
-use cf_rustracing_jaeger::span::SpanReceiver;
+use cf_rustracing_jaeger::span::{Span, SpanReceiver};
 use futures_util::future::BoxFuture;
 use once_cell::sync::{Lazy, OnceCell};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 #[cfg(feature = "telemetry-otlp-grpc")]
 use super::output_otlp_grpc;
@@ -27,6 +31,9 @@ static NOOP_HARNESS: Lazy<TracingHarness> = Lazy::new(|| {
 
         #[cfg(feature = "testing")]
         test_tracer_scope_stack: Default::default(),
+
+        active_roots: Default::default(),
+        tracing_start: SystemTime::now(),
     }
 });
 
@@ -37,6 +44,9 @@ pub(crate) struct TracingHarness {
 
     #[cfg(feature = "testing")]
     pub(crate) test_tracer_scope_stack: ScopeStack<Tracer>,
+
+    pub(super) active_roots: Arc<LiveReferenceSet<Arc<parking_lot::RwLock<Span>>>>,
+    tracing_start: SystemTime,
 }
 
 impl TracingHarness {
@@ -55,6 +65,10 @@ impl TracingHarness {
     #[cfg(not(feature = "testing"))]
     pub(crate) fn tracer(&'static self) -> &Tracer {
         &self.tracer
+    }
+
+    pub(crate) fn get_active_traces(&self) -> String {
+        spans_to_trace_events(self.tracing_start, &self.active_roots.get_live_references())
     }
 }
 
@@ -95,6 +109,9 @@ pub(crate) fn init(
 
             #[cfg(feature = "testing")]
             test_tracer_scope_stack: Default::default(),
+
+            active_roots: Default::default(),
+            tracing_start: SystemTime::now(),
         };
 
         let _ = HARNESS.set(harness);
